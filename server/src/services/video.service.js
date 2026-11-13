@@ -32,23 +32,23 @@ export const processVideoJob = async (videoId, originalFilePath) => {
 
     const processedDir = getVideoProcessedDir(videoId);
 
-    // 1. Probe video metadata
+    // 1. Probe video metadata (fast, with fallback)
     const metadata = await getVideoMetadata(originalFilePath);
 
-    // 2. Generate thumbnail
-    const thumbFile = await generateThumbnail(originalFilePath, processedDir, metadata.duration);
+    // 2. Generate thumbnail (safe fallback if it fails)
+    const thumbFile = await generateThumbnail(originalFilePath, processedDir);
 
-    // 3. Transcode to multi-bitrate HLS
-    const masterPlaylist = await convertToHLS(originalFilePath, processedDir, metadata);
+    // 3. Transcode to HLS using ultrafast cloud settings
+    const masterPlaylist = await convertToHLS(originalFilePath, processedDir);
 
     // 4. Update MongoDB document as completed
     const updatedVideo = await Video.findByIdAndUpdate(
       videoId,
       {
         processingStatus: 'completed',
-        duration: metadata.duration,
+        duration: metadata.duration || 0,
         hlsPlaylist: masterPlaylist,
-        thumbnail: thumbFile,
+        thumbnail: thumbFile || null,
         errorMessage: null,
       },
       { new: true }

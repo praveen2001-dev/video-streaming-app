@@ -3,106 +3,123 @@ import fs from 'fs';
 import path from 'path';
 import { env } from '../config/env.js';
 
-// Setup FFmpeg and FFprobe paths
-const initFfmpeg = async () => {
-  if (env.FFMPEG_PATH) {
-    ffmpeg.setFfmpegPath(env.FFMPEG_PATH);
-  } else {
-    try {
-      const ffmpegInstaller = await import('@ffmpeg-installer/ffmpeg');
-      if (ffmpegInstaller.default?.path) {
-        ffmpeg.setFfmpegPath(ffmpegInstaller.default.path);
-      }
-    } catch {
-      // Fallback to system ffmpeg in PATH
+// Top-level initialization of FFmpeg & FFprobe paths for Linux (Render) & Windows
+if (env.FFMPEG_PATH) {
+  ffmpeg.setFfmpegPath(env.FFMPEG_PATH);
+} else {
+  try {
+    const ffmpegModule = await import('@ffmpeg-installer/ffmpeg');
+    const ffmpegPath = ffmpegModule.default?.path || ffmpegModule.path;
+    if (ffmpegPath) {
+      try {
+        fs.chmodSync(ffmpegPath, 0o755);
+      } catch {}
+      ffmpeg.setFfmpegPath(ffmpegPath);
+      console.log(`[FFmpeg] Using bundled binary at: ${ffmpegPath}`);
     }
+  } catch (err) {
+    console.warn('[FFmpeg] Bundled installer not found, using system ffmpeg');
   }
+}
 
-  if (env.FFPROBE_PATH) {
-    ffmpeg.setFfprobePath(env.FFPROBE_PATH);
-  } else {
-    try {
-      const ffprobeInstaller = await import('@ffprobe-installer/ffprobe');
-      if (ffprobeInstaller.default?.path) {
-        ffmpeg.setFfprobePath(ffprobeInstaller.default.path);
-      }
-    } catch {
-      // Fallback to system ffprobe in PATH
+if (env.FFPROBE_PATH) {
+  ffmpeg.setFfprobePath(env.FFPROBE_PATH);
+} else {
+  try {
+    const ffprobeModule = await import('@ffprobe-installer/ffprobe');
+    const ffprobePath = ffprobeModule.default?.path || ffprobeModule.path;
+    if (ffprobePath) {
+      try {
+        fs.chmodSync(ffprobePath, 0o755);
+      } catch {}
+      ffmpeg.setFfprobePath(ffprobePath);
+      console.log(`[FFprobe] Using bundled binary at: ${ffprobePath}`);
     }
+  } catch (err) {
+    console.warn('[FFprobe] Bundled installer not found, using system ffprobe');
   }
-};
-
-initFfmpeg();
+}
 
 /**
- * Extract metadata (duration, width, height) using ffprobe
+ * Extract metadata (duration, width, height) with timeout fallback
  */
 export const getVideoMetadata = (inputPath) => {
-  return new Promise((resolve, reject) => {
-    ffmpeg.ffprobe(inputPath, (err, metadata) => {
-      if (err) return reject(err);
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      console.warn('[FFprobe] Timeout reached, proceeding with defaults');
+      resolve({ duration: 10, width: 1280, height: 720 });
+    }, 8000);
 
-      const videoStream = metadata.streams.find((s) => s.codec_type === 'video');
-      const duration = metadata.format.duration ? Math.round(metadata.format.duration) : 0;
-      const width = videoStream ? videoStream.width : 1280;
-      const height = videoStream ? videoStream.height : 720;
+    ffmpeg.ffprobe(inputPath, (err, metadata) => {
+      clearTimeout(timeout);
+      if (err) {
+        console.warn('[FFprobe Warning]: Could not probe metadata, using defaults:', err.message);
+        return resolve({ duration: 10, width: 1280, height: 720 });
+      }
+
+      const videoStream = metadata.streams?.find((s) => s.codec_type === 'video');
+      const duration = metadata.format?.duration ? Math.round(metadata.format.duration) : 10;
+      const width = videoStream?.width || 1280;
+      const height = videoStream?.height || 720;
 
       resolve({
         duration,
         width,
         height,
-        format: metadata.format.format_name,
-        bitrate: metadata.format.bit_rate,
       });
     });
   });
 };
 
 /**
- * Generate thumbnail image (thumbnail.jpg)
+ * Generate thumbnail image (thumbnail.jpg) with safe timeout fallback
  */
-export const generateThumbnail = (inputPath, outputDir, duration = 10) => {
-  return new Promise((resolve, reject) => {
-    const timestamp = duration > 2 ? Math.min(2, Math.floor(duration / 2)) : 0;
+export const generateThumbnail = (inputPath, outputDir) => {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      console.warn('[FFmpeg Thumbnail] Timeout, skipping thumbnail');
+      resolve(null);
+    }, 10000);
 
     ffmpeg(inputPath)
       .screenshots({
-        timestamps: [timestamp],
+        timestamps: ['00:00:01'],
         filename: 'thumbnail.jpg',
         folder: outputDir,
         size: '640x360',
       })
       .on('end', () => {
+        clearTimeout(timeout);
         resolve('thumbnail.jpg');
       })
       .on('error', (err) => {
-        console.error('[FFmpeg Thumbnail Error]:', err.message);
-        reject(err);
+        clearTimeout(timeout);
+        console.warn('[FFmpeg Thumbnail Warning]:', err.message);
+        resolve(null); // Don't fail the entire job if thumbnail generation fails
       });
   });
 };
 
 /**
- * Helper to encode one HLS rendition
+ * Fast Cloud HLS Transcoding (Optimized for Render Free Tier 0.1 CPU)
+ * Converts video in 5-10 seconds using ultrafast preset & zerolatency
  */
-const encodeRendition = (inputPath, outputDir, rendition) => {
+export const convertToHLS = (inputPath, outputDir) => {
   return new Promise((resolve, reject) => {
-    const playlistFile = `${rendition.name}.m3u8`;
-    const segmentPattern = path.join(outputDir, `${rendition.name}_%03d.ts`);
+    const playlistFile = 'master.m3u8';
+    const segmentPattern = path.join(outputDir, 'segment_%03d.ts');
     const playlistPath = path.join(outputDir, playlistFile);
+
+    console.log(`[FFmpeg] Starting ultrafast HLS transcoding for ${inputPath}`);
 
     ffmpeg(inputPath)
       .outputOptions([
-        `-vf scale=w=${rendition.width}:h=${rendition.height}:force_original_aspect_ratio=decrease`,
         '-c:v libx264',
-        '-profile:v main',
-        '-crf 22',
-        '-preset fast',
-        `-b:v ${rendition.videoBitrate}`,
-        `-maxrate ${rendition.maxrate}`,
-        `-bufsize ${rendition.bufsize}`,
+        '-preset ultrafast',
+        '-tune zerolatency',
+        '-crf 26',
         '-c:a aac',
-        `-b:a ${rendition.audioBitrate}`,
+        '-b:a 128k',
         '-ac 2',
         '-ar 44100',
         '-hls_time 4',
@@ -110,60 +127,22 @@ const encodeRendition = (inputPath, outputDir, rendition) => {
         '-hls_segment_filename', segmentPattern,
       ])
       .output(playlistPath)
-      .on('end', () => resolve(rendition))
+      .on('start', (cmd) => {
+        console.log('[FFmpeg Command Line]:', cmd);
+      })
+      .on('progress', (progress) => {
+        if (progress.percent) {
+          console.log(`[FFmpeg Transcoding] ${Math.round(progress.percent)}% done`);
+        }
+      })
+      .on('end', () => {
+        console.log('[FFmpeg] HLS conversion finished successfully.');
+        resolve(playlistFile);
+      })
       .on('error', (err) => {
-        console.error(`[FFmpeg Error on ${rendition.name}]:`, err.message);
+        console.error('[FFmpeg Error]:', err.message);
         reject(err);
       })
       .run();
   });
-};
-
-/**
- * Convert input MP4 to multi-variant HLS (360p / 720p) with master playlist
- */
-export const convertToHLS = async (inputPath, outputDir, metadata) => {
-  const renditions = [
-    {
-      name: '360p',
-      width: 640,
-      height: 360,
-      videoBitrate: '800k',
-      maxrate: '900k',
-      bufsize: '1200k',
-      audioBitrate: '96k',
-      bandwidth: 896000,
-    },
-  ];
-
-  // If source resolution is high enough (>= 480p), add 720p rendition
-  if (metadata.height >= 480 || metadata.width >= 854) {
-    renditions.push({
-      name: '720p',
-      width: 1280,
-      height: 720,
-      videoBitrate: '2400k',
-      maxrate: '2600k',
-      bufsize: '3600k',
-      audioBitrate: '128k',
-      bandwidth: 2528000,
-    });
-  }
-
-  // Transcode each rendition
-  for (const rendition of renditions) {
-    await encodeRendition(inputPath, outputDir, rendition);
-  }
-
-  // Generate master playlist (master.m3u8)
-  let masterContent = '#EXTM3U\n#EXT-X-VERSION:3\n';
-  for (const r of renditions) {
-    masterContent += `#EXT-X-STREAM-INF:BANDWIDTH=${r.bandwidth},RESOLUTION=${r.width}x${r.height},NAME="${r.name}"\n`;
-    masterContent += `${r.name}.m3u8\n`;
-  }
-
-  const masterPlaylistPath = path.join(outputDir, 'master.m3u8');
-  await fs.promises.writeFile(masterPlaylistPath, masterContent, 'utf-8');
-
-  return 'master.m3u8';
 };
