@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Video Storage (processed and uploads)
+server/storage/uploads/*
+!server/storage/uploads/.gitkeep
+server/storage/processed/*
+!server/storage/processed/.gitkeep
+
+# Build outputs
+client/dist/
+client/dist-ssr/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+Thumbs.db
