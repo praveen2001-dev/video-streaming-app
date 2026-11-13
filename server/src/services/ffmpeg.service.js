@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { env } from '../config/env.js';
 
-// Top-level initialization of FFmpeg & FFprobe paths for Linux (Render) & Windows
+// Top-level initialization of FFmpeg & FFprobe paths
 if (env.FFMPEG_PATH) {
   ffmpeg.setFfmpegPath(env.FFMPEG_PATH);
 } else {
@@ -41,31 +41,34 @@ if (env.FFPROBE_PATH) {
 }
 
 /**
- * Extract metadata (duration, width, height) with timeout fallback
+ * Extract metadata (duration, width, height, hasAudio)
  */
 export const getVideoMetadata = (inputPath) => {
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
       console.warn('[FFprobe] Timeout reached, proceeding with defaults');
-      resolve({ duration: 10, width: 1280, height: 720 });
+      resolve({ duration: 10, width: 1280, height: 720, hasAudio: true });
     }, 8000);
 
     ffmpeg.ffprobe(inputPath, (err, metadata) => {
       clearTimeout(timeout);
       if (err) {
         console.warn('[FFprobe Warning]: Could not probe metadata, using defaults:', err.message);
-        return resolve({ duration: 10, width: 1280, height: 720 });
+        return resolve({ duration: 10, width: 1280, height: 720, hasAudio: true });
       }
 
       const videoStream = metadata.streams?.find((s) => s.codec_type === 'video');
+      const audioStream = metadata.streams?.find((s) => s.codec_type === 'audio');
       const duration = metadata.format?.duration ? Math.round(metadata.format.duration) : 10;
       const width = videoStream?.width || 1280;
       const height = videoStream?.height || 720;
+      const hasAudio = !!audioStream;
 
       resolve({
         duration,
         width,
         height,
+        hasAudio,
       });
     });
   });
@@ -101,42 +104,52 @@ export const generateThumbnail = (inputPath, outputDir) => {
 };
 
 /**
- * Fast Cloud HLS Transcoding (Optimized for Render Free Tier 0.1 CPU)
- * Converts video in 5-10 seconds using ultrafast preset & zerolatency
+ * Universal Mobile & Desktop HLS Transcoding
+ * Fixes mobile phone camera videos (odd dimensions like 1079x1920, yuv420p format, orientation)
  */
-export const convertToHLS = (inputPath, outputDir) => {
+export const convertToHLS = (inputPath, outputDir, metadata = {}) => {
   return new Promise((resolve, reject) => {
     const playlistFile = 'master.m3u8';
     const segmentPattern = path.join(outputDir, 'segment_%03d.ts');
     const playlistPath = path.join(outputDir, playlistFile);
 
-    console.log(`[FFmpeg] Starting ultrafast HLS transcoding for ${inputPath}`);
+    console.log(`[FFmpeg] Starting universal HLS transcoding for ${inputPath}`);
+
+    // Essential fix for phone videos:
+    // 1. scale=trunc(iw/2)*2:trunc(ih/2)*2 forces dimensions to be even numbers (required by H.264)
+    // 2. format=yuv420p ensures 8-bit standard color readable by all browsers
+    const outputOptions = [
+      '-vf',
+      'scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p',
+      '-c:v',
+      'libx264',
+      '-preset',
+      'ultrafast',
+      '-tune',
+      'zerolatency',
+      '-crf',
+      '26',
+      '-hls_time',
+      '4',
+      '-hls_playlist_type',
+      'vod',
+      '-hls_segment_filename',
+      segmentPattern,
+    ];
+
+    // Only add audio encoding if source video actually contains an audio stream
+    if (metadata.hasAudio !== false) {
+      outputOptions.push('-c:a', 'aac', '-b:a', '128k', '-ar', '44100');
+    }
 
     ffmpeg(inputPath)
-      .outputOptions([
-        '-c:v libx264',
-        '-preset ultrafast',
-        '-tune zerolatency',
-        '-crf 26',
-        '-c:a aac',
-        '-b:a 128k',
-        '-ac 2',
-        '-ar 44100',
-        '-hls_time 4',
-        '-hls_playlist_type vod',
-        '-hls_segment_filename', segmentPattern,
-      ])
+      .outputOptions(outputOptions)
       .output(playlistPath)
       .on('start', (cmd) => {
         console.log('[FFmpeg Command Line]:', cmd);
       })
-      .on('progress', (progress) => {
-        if (progress.percent) {
-          console.log(`[FFmpeg Transcoding] ${Math.round(progress.percent)}% done`);
-        }
-      })
       .on('end', () => {
-        console.log('[FFmpeg] HLS conversion finished successfully.');
+        console.log('[FFmpeg] Universal HLS conversion finished successfully.');
         resolve(playlistFile);
       })
       .on('error', (err) => {

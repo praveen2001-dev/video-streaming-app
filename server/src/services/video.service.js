@@ -38,8 +38,8 @@ export const processVideoJob = async (videoId, originalFilePath) => {
     // 2. Generate thumbnail (safe fallback if it fails)
     const thumbFile = await generateThumbnail(originalFilePath, processedDir);
 
-    // 3. Transcode to HLS using ultrafast cloud settings
-    const masterPlaylist = await convertToHLS(originalFilePath, processedDir);
+    // 3. Transcode to HLS using universal mobile & desktop settings
+    const masterPlaylist = await convertToHLS(originalFilePath, processedDir, metadata);
 
     // 4. Update MongoDB document as completed
     const updatedVideo = await Video.findByIdAndUpdate(
