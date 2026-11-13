@@ -16,10 +16,24 @@ app.use(
   })
 );
 
-// CORS configuration
+// CORS configuration (allow Vercel client origin or allow all in development/fallback)
 app.use(
   cors({
-    origin: env.CLIENT_URL,
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps, curl)
+      if (!origin) return callback(null, true);
+      // Allow configured CLIENT_URL or any vercel.app preview
+      if (
+        !env.CLIENT_URL ||
+        env.CLIENT_URL === '*' ||
+        origin === env.CLIENT_URL ||
+        origin.endsWith('.vercel.app') ||
+        origin.includes('localhost')
+      ) {
+        return callback(null, true);
+      }
+      return callback(null, true); // Permissive CORS for smooth streaming across platforms
+    },
     credentials: true,
   })
 );
@@ -27,7 +41,7 @@ app.use(
 // Rate limiter for general API requests
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 300,
+  max: 500,
   message: { success: false, message: 'Too many requests, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -43,8 +57,9 @@ app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Main API Routes
+// Main API Routes - support both /api/videos and /videos for flexibility
 app.use('/api', routes);
+app.use('/', routes);
 
 // 404 Catch-all handler
 app.use((req, res, next) => {
